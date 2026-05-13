@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>财报分析 Demo</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>财报分析 Demo</h1>
+            <p>输入美股上市公司名称或股票代码，读取 SEC EDGAR 真实财报数据。</p>
+          </div>
+          <div class="source-pill">SEC XBRL</div>
+        </header>
+
+        <section class="controls">
+          <div class="search-block">
+            <label for="companySearch">主公司</label>
+            <div class="search-row">
+              <input id="companySearch" autocomplete="off" placeholder="例如 Apple、Microsoft、AAPL" />
+              <button id="loadBtn">分析</button>
+            </div>
+            <div id="searchResults" class="results"></div>
+          </div>
+          <div class="period-block">
+            <label>周期</label>
+            <div class="segmented">
+              <button class="active" data-period="annual">年度</button>
+              <button data-period="quarterly">季度</button>
+            </div>
+          </div>
+          <div class="search-block compare-input">
+            <label for="peerSearch">可比公司</label>
+            <div class="search-row">
+              <input id="peerSearch" autocomplete="off" placeholder="输入同行公司" />
+              <button id="compareBtn">对比</button>
+            </div>
+            <div id="peerResults" class="results"></div>
+          </div>
+        </section>
+
+        <section id="status" class="status">请选择一家公司开始分析。</section>
+        <section id="summary" class="summary-grid"></section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>三大表</h2>
+            <div class="tabs">
+              <button class="active" data-tab="income">利润表</button>
+              <button data-tab="balance">资产负债表</button>
+              <button data-tab="cashflow">现金流量表</button>
+            </div>
+          </div>
+          <div id="statementTable" class="table-wrap empty">等待加载财报数据</div>
+        </section>
+
+        <section class="panel metrics-panel">
+          <div class="panel-head">
+            <h2>专业指标</h2>
+            <select id="metricFilter">
+              <option value="all">全部指标</option>
+            </select>
+          </div>
+          <div id="ratioTable" class="table-wrap empty">等待加载指标</div>
+        </section>
+
+        <section class="analysis-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>杜邦分析</h2>
+              <span class="panel-note">ROE = 销售净利率 × 总资产周转率 × 权益倍数</span>
+            </div>
+            <div id="dupontPanel" class="dupont-wrap empty">等待加载杜邦拆解</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>时间趋势</h2>
+              <select id="trendSelect"></select>
+            </div>
+            <canvas id="trendCanvas" width="900" height="420"></canvas>
+          </section>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>同行专业指标对比</h2>
+            <span id="compareMeta" class="panel-note"></span>
+          </div>
+          <div id="compareTable" class="table-wrap empty">输入可比公司后查看专业指标对比</div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
