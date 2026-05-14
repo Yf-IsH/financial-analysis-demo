@@ -25,7 +25,7 @@
 1. 进入项目目录：
 
 ```powershell
-cd "D:\HuaweiMoveData\Users\chenb\Desktop\财报分析demo"
+cd financial-analysis-demo
 ```
 
 2. 可选：创建并激活虚拟环境。
@@ -75,35 +75,14 @@ http://127.0.0.1:8000
 
 ## 配置项
 
-可以通过环境变量调整默认行为：
-
-- `PORT`：本地服务端口，默认 `8000`
-- `SEC_USER_AGENT`：访问 SEC API 时使用的 User-Agent
-
-示例：
+可以通过环境变量设置访问 SEC API 时使用的 User-Agent：
 
 ```powershell
-$env:PORT="8080"
 $env:SEC_USER_AGENT="financial-analysis-demo your-email@example.com"
 python app.py
 ```
 
 ## 常见问题
-
-### 端口 8000 被占用
-
-换一个端口启动：
-
-```powershell
-$env:PORT="8080"
-python app.py
-```
-
-然后打开：
-
-```text
-http://127.0.0.1:8080
-```
 
 ### 首次查询较慢
 
