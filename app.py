@@ -19,11 +19,56 @@ CACHE_DIR = ROOT / ".cache"
 STATIC_DIR = ROOT / "static"
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+EASTMONEY_SUGGEST_URL = "https://searchapi.eastmoney.com/api/suggest/get"
+EASTMONEY_FINANCE_URL = "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/{endpoint}"
+EASTMONEY_DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 CACHE_TTL_SECONDS = 60 * 60 * 24
 USER_AGENT = os.environ.get(
     "SEC_USER_AGENT",
     "FinancialStatementDemo/0.1 contact@example.com",
 )
+DEFAULT_AI_MODEL = os.environ.get("FINANCE_AI_MODEL", "gpt-4.1-mini")
+
+
+A_SHARE_SEEDS = [
+    {"code": "600519", "symbol": "600519.SH", "em_code": "SH600519", "ticker": "600519", "title": "贵州茅台"},
+    {"code": "300750", "symbol": "300750.SZ", "em_code": "SZ300750", "ticker": "300750", "title": "宁德时代"},
+    {"code": "000333", "symbol": "000333.SZ", "em_code": "SZ000333", "ticker": "000333", "title": "美的集团"},
+    {"code": "002594", "symbol": "002594.SZ", "em_code": "SZ002594", "ticker": "002594", "title": "比亚迪"},
+    {"code": "601318", "symbol": "601318.SH", "em_code": "SH601318", "ticker": "601318", "title": "中国平安"},
+    {"code": "600036", "symbol": "600036.SH", "em_code": "SH600036", "ticker": "600036", "title": "招商银行"},
+    {"code": "000858", "symbol": "000858.SZ", "em_code": "SZ000858", "ticker": "000858", "title": "五粮液"},
+    {"code": "600276", "symbol": "600276.SH", "em_code": "SH600276", "ticker": "600276", "title": "恒瑞医药"},
+    {"code": "601888", "symbol": "601888.SH", "em_code": "SH601888", "ticker": "601888", "title": "中国中免"},
+    {"code": "000651", "symbol": "000651.SZ", "em_code": "SZ000651", "ticker": "000651", "title": "格力电器"},
+    {"code": "600887", "symbol": "600887.SH", "em_code": "SH600887", "ticker": "600887", "title": "伊利股份"},
+    {"code": "688981", "symbol": "688981.SH", "em_code": "SH688981", "ticker": "688981", "title": "中芯国际"},
+]
+
+A_SHARE_REPORT_ENDPOINTS = {
+    "income": "RPT_DMSK_FN_INCOME",
+    "balance": "RPT_DMSK_FN_BALANCE",
+    "cashflow": "RPT_DMSK_FN_CASHFLOW",
+}
+
+A_SHARE_CUMULATIVE_METRICS = {
+    "revenue",
+    "cost_of_revenue",
+    "gross_profit",
+    "operating_income",
+    "net_income",
+    "pretax_income",
+    "income_tax",
+    "interest_expense",
+    "depreciation_amortization",
+    "operating_expenses",
+    "operating_cash_flow",
+    "capex",
+    "investing_cash_flow",
+    "financing_cash_flow",
+    "dividends",
+}
 
 
 METRIC_LABELS = {
@@ -198,11 +243,32 @@ def cache_path(name: str) -> Path:
     return CACHE_DIR / safe
 
 
+def parse_json_payload(payload: str) -> Any:
+    text = payload.lstrip("\ufeff").strip()
+    if not text:
+        raise RuntimeError("数据源返回为空")
+    if text.startswith("<"):
+        raise RuntimeError("数据源返回了网页内容而不是财报 JSON，可能是接口变更或访问受限")
+    match = re.match(r"^[A-Za-z_$][\w$]*\((.*)\)\s*;?$", text, flags=re.S)
+    if match:
+        text = match.group(1)
+    return json.loads(text)
+
+
+def read_cached_json(path: Path) -> Any | None:
+    try:
+        return parse_json_payload(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+
+
 def fetch_json(url: str, cache_name: str, ttl: int = CACHE_TTL_SECONDS) -> Any:
     ensure_dirs()
     path = cache_path(cache_name)
     if path.exists() and time.time() - path.stat().st_mtime < ttl:
-        return json.loads(path.read_text(encoding="utf-8"))
+        cached = read_cached_json(path)
+        if cached is not None:
+            return cached
 
     request = urllib.request.Request(
         url,
@@ -214,14 +280,45 @@ def fetch_json(url: str, cache_name: str, ttl: int = CACHE_TTL_SECONDS) -> Any:
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            payload = response.read().decode("utf-8")
+            payload = response.read().decode("utf-8-sig")
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"SEC 请求失败：HTTP {exc.code} {exc.reason}") from exc
+        if path.exists():
+            cached = read_cached_json(path)
+            if cached is not None:
+                return cached
+        raise RuntimeError(f"数据源请求失败：HTTP {exc.code} {exc.reason}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"无法连接 SEC 数据源：{exc.reason}") from exc
+        if path.exists():
+            cached = read_cached_json(path)
+            if cached is not None:
+                return cached
+        raise RuntimeError(f"无法连接数据源：{exc.reason}") from exc
 
     path.write_text(payload, encoding="utf-8")
-    return json.loads(payload)
+    return parse_json_payload(payload)
+
+
+def post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: int = 45) -> Any:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            **headers,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")[:300]
+        raise RuntimeError(f"AI 请求失败：HTTP {exc.code} {exc.reason} {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"无法连接 AI 服务：{exc.reason}") from exc
+    return json.loads(raw)
 
 
 def get_companies() -> list[dict[str, Any]]:
@@ -236,6 +333,107 @@ def get_companies() -> list[dict[str, Any]]:
             }
         )
     return sorted(companies, key=lambda item: item["ticker"])
+
+
+def normalize_market(market: str | None) -> str:
+    value = (market or "us").strip().lower()
+    if value in {"a", "ashare", "a-share", "cn", "china", "沪深", "a股"}:
+        return "a"
+    return "us"
+
+
+def enrich_company(company: dict[str, Any], market: str) -> dict[str, Any]:
+    result = dict(company)
+    result["market"] = market
+    result["id"] = result.get("cik") if market == "us" else result.get("symbol") or result.get("code")
+    result["displayTicker"] = result.get("ticker") or result.get("symbol") or result.get("code")
+    result["sourceLabel"] = "SEC XBRL" if market == "us" else "东方财富财报"
+    return result
+
+
+def normalize_a_share_code(value: str) -> str:
+    raw = value.strip().upper()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) >= 6:
+        return digits[-6:]
+    return digits
+
+
+def a_share_market_prefix(code: str) -> str:
+    if code.startswith(("5", "6", "9")) or code.startswith("688"):
+        return "SH"
+    return "SZ"
+
+
+def make_a_share_company(code: str, title: str = "") -> dict[str, Any]:
+    normalized = normalize_a_share_code(code)
+    prefix = a_share_market_prefix(normalized)
+    return {
+        "code": normalized,
+        "symbol": f"{normalized}.{prefix}",
+        "em_code": f"{prefix}{normalized}",
+        "ticker": normalized,
+        "title": title or normalized,
+    }
+
+
+def search_a_share_companies(query: str, limit: int = 12) -> list[dict[str, Any]]:
+    query = query.strip()
+    if not query:
+        return []
+    lower = query.lower()
+    normalized_query_code = normalize_a_share_code(query)
+    matches = []
+    seen = set()
+
+    for seed in A_SHARE_SEEDS:
+        haystack = " ".join([seed["code"], seed["symbol"], seed["title"]]).lower()
+        if lower in haystack or (normalized_query_code and normalized_query_code == seed["code"]):
+            matches.append(enrich_company(seed, "a"))
+            seen.add(seed["code"])
+
+    params = urllib.parse.urlencode(
+        {
+            "input": query,
+            "type": "14",
+            "token": "D43BF722C8E33AECC7E37653B2FCA73A",
+            "count": str(limit),
+        }
+    )
+    try:
+        raw = fetch_json(
+            f"{EASTMONEY_SUGGEST_URL}?{params}",
+            f"eastmoney_suggest_{urllib.parse.quote(query, safe='')}.json",
+            ttl=60 * 60 * 12,
+        )
+        suggestions = raw.get("QuotationCodeTable", {}).get("Data", []) or raw.get("data", []) or []
+        for row in suggestions:
+            code = normalize_a_share_code(str(row.get("Code") or row.get("code") or ""))
+            if len(code) != 6 or code in seen:
+                continue
+            market = str(row.get("MarketType") or row.get("market") or "").upper()
+            prefix = "SH" if market in {"1", "SH", "SSE"} or code.startswith(("5", "6", "9")) else "SZ"
+            title = str(row.get("Name") or row.get("SecurityName") or row.get("name") or code)
+            matches.append(
+                enrich_company(
+                    {
+                        "code": code,
+                        "symbol": f"{code}.{prefix}",
+                        "em_code": f"{prefix}{code}",
+                        "ticker": code,
+                        "title": title,
+                    },
+                    "a",
+                )
+            )
+            seen.add(code)
+    except Exception:
+        if re.fullmatch(r"\d{6}", normalized_query_code):
+            fallback = make_a_share_company(query)
+            if fallback["code"] not in seen:
+                matches.append(enrich_company(fallback, "a"))
+
+    return matches[:limit]
 
 
 def search_companies(query: str, limit: int = 12) -> list[dict[str, Any]]:
@@ -256,20 +454,265 @@ def search_companies(query: str, limit: int = 12) -> list[dict[str, Any]]:
             prefix.append(company)
         elif query in ticker or query in title or query in cik:
             contains.append(company)
-    return (exact + prefix + contains)[:limit]
+    return [enrich_company(company, "us") for company in (exact + prefix + contains)[:limit]]
+
+
+def search_market_companies(query: str, market: str, limit: int = 12) -> list[dict[str, Any]]:
+    normalized = normalize_market(market)
+    if normalized == "a":
+        return search_a_share_companies(query, limit)
+    return search_companies(query, limit)
 
 
 def get_company_by_cik(cik: str) -> dict[str, Any] | None:
     normalized = f"{int(cik):010d}" if cik.isdigit() else cik
     for company in get_companies():
         if company["cik"] == normalized:
-            return company
+            return enrich_company(company, "us")
     return None
 
 
 def get_company_facts(cik: str) -> dict[str, Any]:
     normalized = f"{int(cik):010d}"
     return fetch_json(SEC_FACTS_URL.format(cik=normalized), f"facts_{normalized}.json")
+
+
+def get_a_share_company(symbol: str) -> dict[str, Any]:
+    code = normalize_a_share_code(symbol)
+    if len(code) != 6:
+        raise ValueError("A 股代码应为 6 位数字，例如 600519")
+    for seed in A_SHARE_SEEDS:
+        if seed["code"] == code:
+            return enrich_company(seed, "a")
+    return enrich_company(make_a_share_company(code), "a")
+
+
+def compact_report_date(value: str) -> str:
+    if not value:
+        return ""
+    return value[:10]
+
+
+def period_from_report_date(value: str, period: str) -> str:
+    report_date = compact_report_date(value)
+    if not report_date:
+        return ""
+    year = report_date[:4]
+    if period == "annual":
+        return year
+    month_day = report_date[5:10]
+    fp = {"03-31": "Q1", "06-30": "Q2", "09-30": "Q3", "12-31": "FY"}.get(month_day, month_day)
+    return f"{year} {fp}"
+
+
+def first_number(row: dict[str, Any], keys: list[str]) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def normalize_eastmoney_payload(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("data", "Data", "result"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+        if isinstance(value, dict):
+            for nested in ("data", "Data"):
+                rows = value.get(nested)
+                if isinstance(rows, list):
+                    return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def fetch_a_share_statement(company: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    report_name = A_SHARE_REPORT_ENDPOINTS[kind]
+    params = urllib.parse.urlencode(
+        {
+            "sortColumns": "REPORT_DATE",
+            "sortTypes": "-1",
+            "pageSize": "40",
+            "pageNumber": "1",
+            "reportName": report_name,
+            "columns": "ALL",
+            "filter": f'(SECURITY_CODE="{company["code"]}")',
+        }
+    )
+    payload = fetch_json(
+        f"{EASTMONEY_DATACENTER_URL}?{params}",
+        f"eastmoney_{kind}_{company['em_code']}.json",
+        ttl=60 * 60 * 12,
+    )
+    rows = normalize_eastmoney_payload(payload)
+    if not rows:
+        raise RuntimeError("东方财富数据中心未返回可用财报数据，可能是接口变更或网络受限")
+    return rows
+
+
+def pick_a_share_period_rows(rows: list[dict[str, Any]], period: str) -> list[dict[str, Any]]:
+    picked = []
+    for row in rows:
+        report_date = compact_report_date(str(row.get("REPORT_DATE") or row.get("report_date") or ""))
+        if not report_date:
+            continue
+        if period == "annual" and not report_date.endswith("12-31"):
+            continue
+        if period == "quarterly" and report_date[5:10] not in {"03-31", "06-30", "09-30", "12-31"}:
+            continue
+        picked.append(row)
+
+    def row_order(row: dict[str, Any]) -> str:
+        return compact_report_date(str(row.get("REPORT_DATE") or row.get("report_date") or ""))
+
+    by_date = {}
+    for row in picked:
+        report_date = row_order(row)
+        by_date[report_date] = row
+    return [by_date[key] for key in sorted(by_date)][-8:]
+
+
+def value_from_rows(rows: list[dict[str, Any]], index: int, keys: list[str], metric: str, period: str) -> float | None:
+    current = first_number(rows[index], keys)
+    if current is None:
+        return None
+    if period != "quarterly" or metric not in A_SHARE_CUMULATIVE_METRICS:
+        return current
+    report_date = compact_report_date(str(rows[index].get("REPORT_DATE") or ""))
+    if report_date.endswith("03-31"):
+        return current
+    if index == 0:
+        return current
+    previous_date = compact_report_date(str(rows[index - 1].get("REPORT_DATE") or ""))
+    if previous_date[:4] != report_date[:4]:
+        return current
+    previous = first_number(rows[index - 1], keys)
+    if previous is None:
+        return current
+    return current - previous
+
+
+A_SHARE_FIELD_MAP = {
+    "revenue": ["TOTAL_OPERATE_INCOME", "OPERATE_INCOME", "营业总收入", "营业收入"],
+    "cost_of_revenue": ["OPERATE_COST", "TOTAL_OPERATE_COST", "营业成本", "营业总成本"],
+    "gross_profit": [],
+    "operating_income": ["OPERATE_PROFIT", "营业利润"],
+    "net_income": ["PARENT_NETPROFIT", "NETPROFIT", "归属于母公司所有者的净利润", "净利润"],
+    "eps_diluted": ["DILUTED_EPS", "稀释每股收益"],
+    "cash": ["MONETARYFUNDS", "MONETARY_CAP", "货币资金"],
+    "current_assets": ["TOTAL_CURRENT_ASSETS", "流动资产合计"],
+    "assets": ["TOTAL_ASSETS", "资产总计"],
+    "current_liabilities": ["TOTAL_CURRENT_LIAB", "流动负债合计"],
+    "liabilities": ["TOTAL_LIABILITIES", "负债合计"],
+    "equity": ["PARENT_EQUITY", "TOTAL_EQUITY", "归属于母公司股东权益合计", "所有者权益合计"],
+    "inventory": ["INVENTORY", "存货"],
+    "receivables": ["ACCOUNTS_RECE", "NOTE_ACCOUNTS_RECE", "应收账款", "应收票据及应收账款"],
+    "operating_cash_flow": ["NETCASH_OPERATE", "经营活动产生的现金流量净额"],
+    "capex": ["CONSTRUCT_LONG_ASSET", "购建固定资产、无形资产和其他长期资产支付的现金"],
+    "investing_cash_flow": ["NETCASH_INVEST", "投资活动产生的现金流量净额"],
+    "financing_cash_flow": ["NETCASH_FINANCE", "筹资活动产生的现金流量净额"],
+    "dividends": ["ASSIGN_DIVIDEND_PORFIT", "DISTRIBUTE_DIVIDEND_INTEREST", "分配股利、利润或偿付利息支付的现金"],
+    "buybacks": [],
+    "accounts_payable": ["ACCOUNTS_PAYABLE", "NOTE_ACCOUNTS_PAYABLE", "应付账款", "应付票据及应付账款"],
+    "pretax_income": ["TOTAL_PROFIT", "利润总额"],
+    "income_tax": ["INCOME_TAX", "所得税费用"],
+    "interest_expense": ["INTEREST_EXPENSE", "利息费用"],
+    "depreciation_amortization": ["ASSET_IMPAIRMENT_INCOME", "固定资产折旧、油气资产折耗、生产性生物资产折旧"],
+    "operating_expenses": ["SALE_EXPENSE", "MANAGE_EXPENSE", "RESEARCH_EXPENSE", "FINANCE_EXPENSE"],
+    "short_term_debt": ["SHORT_LOAN", "NONCURRENT_LIAB_1YEAR", "短期借款", "一年内到期的非流动负债"],
+    "long_term_debt": ["LONG_LOAN", "BOND_PAYABLE", "长期借款", "应付债券"],
+    "eps_basic": ["BASIC_EPS", "基本每股收益"],
+}
+
+
+def build_a_share_series(company: dict[str, Any], period: str) -> dict[str, dict[str, Any]]:
+    income_rows = pick_a_share_period_rows(fetch_a_share_statement(company, "income"), period)
+    balance_rows = pick_a_share_period_rows(fetch_a_share_statement(company, "balance"), period)
+    cashflow_rows = pick_a_share_period_rows(fetch_a_share_statement(company, "cashflow"), period)
+    row_groups = {
+        "income": income_rows,
+        "balance": balance_rows,
+        "cashflow": cashflow_rows,
+    }
+    periods = sorted(
+        {
+            period_from_report_date(str(row.get("REPORT_DATE") or ""), period)
+            for rows in row_groups.values()
+            for row in rows
+            if period_from_report_date(str(row.get("REPORT_DATE") or ""), period)
+        },
+        key=lambda value: (
+            int(value[:4]),
+            fp_order(value.split(" ", 1)[1]) if " " in value else 4,
+        ),
+    )[-8:]
+
+    rows_by_period = {
+        kind: {period_from_report_date(str(row.get("REPORT_DATE") or ""), period): row for row in rows}
+        for kind, rows in row_groups.items()
+    }
+    ordered_rows = {
+        kind: [rows_by_period[kind].get(period_name, {}) for period_name in periods]
+        for kind in row_groups
+    }
+
+    metric_kind = {}
+    for metric in STATEMENT_ROWS["income"]:
+        metric_kind[metric] = "income"
+    for metric in STATEMENT_ROWS["balance"]:
+        metric_kind[metric] = "balance"
+    for metric in STATEMENT_ROWS["cashflow"]:
+        metric_kind[metric] = "cashflow"
+
+    series = {}
+    for metric in METRIC_LABELS:
+        kind = metric_kind.get(metric, "income")
+        rows = ordered_rows[kind]
+        values = []
+        for index in range(len(periods)):
+            if metric == "gross_profit":
+                revenue = value_from_rows(rows, index, A_SHARE_FIELD_MAP["revenue"], "revenue", period)
+                cost = value_from_rows(rows, index, A_SHARE_FIELD_MAP["cost_of_revenue"], "cost_of_revenue", period)
+                value = subtract_values(revenue, cost)
+            elif metric == "operating_expenses":
+                values_present = [
+                    first_number(rows[index], [key])
+                    for key in A_SHARE_FIELD_MAP["operating_expenses"]
+                ]
+                value = add_values(*values_present)
+            elif metric in {"short_term_debt", "long_term_debt", "receivables", "accounts_payable"}:
+                values_present = [first_number(rows[index], [key]) for key in A_SHARE_FIELD_MAP[metric]]
+                value = add_values(*values_present)
+            else:
+                value = value_from_rows(rows, index, A_SHARE_FIELD_MAP.get(metric, []), metric, period)
+            values.append(value)
+        series[metric] = {
+            "label": METRIC_LABELS[metric],
+            "points": [
+                {
+                    "period": period_name,
+                    "fy": int(period_name[:4]),
+                    "fp": period_name.split(" ", 1)[1] if " " in period_name else "FY",
+                    "form": "A-share financial report",
+                    "filed": "",
+                    "start": "",
+                    "end": "",
+                    "value": value,
+                    "unit": "CNY",
+                }
+                for period_name, value in zip(periods, values)
+                if value is not None
+            ],
+        }
+    return series
 
 
 def unit_priority(units: dict[str, Any]) -> tuple[str, list[dict[str, Any]]] | None:
@@ -776,18 +1219,32 @@ def make_dupont(ratios: list[dict[str, Any]], periods: list[str]) -> dict[str, A
     }
 
 
-def make_analysis(cik: str, period: str) -> dict[str, Any]:
-    company = get_company_by_cik(cik)
-    if not company:
-        raise ValueError("没有找到该公司")
-    facts = get_company_facts(company["cik"])
-    series = build_series(facts, period)
+def make_analysis(identifier: str, period: str, market: str = "us") -> dict[str, Any]:
+    normalized_market = normalize_market(market)
+    if normalized_market == "a":
+        company = get_a_share_company(identifier)
+        series = build_a_share_series(company, period)
+        source = {
+            "companyFacts": EASTMONEY_FINANCE_URL.format(endpoint="NewFinanceAnalysis"),
+            "note": "数据来自东方财富公开财报接口，按 A 股常见财务字段自动归集；接口变更或网络受限时可能无法获取。",
+        }
+    else:
+        company = get_company_by_cik(identifier)
+        if not company:
+            raise ValueError("没有找到该公司")
+        facts = get_company_facts(company["cik"])
+        series = build_series(facts, period)
+        source = {
+            "companyFacts": SEC_FACTS_URL.format(cik=company["cik"]),
+            "note": "数据来自 SEC EDGAR companyfacts API，按常见 US-GAAP 标签自动归集。",
+        }
     periods = collect_periods(series)
     if not periods:
-        raise ValueError("SEC 数据中没有可用的 10-K/10-Q 财务项目")
+        raise ValueError("没有可用的财务项目，请检查数据源、股票代码或网络连接")
     ratios = make_ratios(series, periods)
     return {
         "company": company,
+        "market": normalized_market,
         "periodType": period,
         "periods": periods,
         "statements": {
@@ -812,10 +1269,7 @@ def make_analysis(cik: str, period: str) -> dict[str, Any]:
                 "equity",
             ]
         },
-        "source": {
-            "companyFacts": SEC_FACTS_URL.format(cik=company["cik"]),
-            "note": "数据来自 SEC EDGAR companyfacts API，按常见 US-GAAP 标签自动归集。",
-        },
+        "source": source,
     }
 
 
@@ -829,9 +1283,9 @@ def latest_value(rows: list[dict[str, Any]], metric: str) -> float | None:
     return None
 
 
-def make_compare(cik_a: str, cik_b: str, period: str) -> dict[str, Any]:
-    left = make_analysis(cik_a, period)
-    right = make_analysis(cik_b, period)
+def make_compare(id_a: str, id_b: str, period: str, market_a: str = "us", market_b: str = "us") -> dict[str, Any]:
+    left = make_analysis(id_a, period, market_a)
+    right = make_analysis(id_b, period, market_b)
     compare_rows = []
     right_lookup = {row["metric"]: row for row in right["ratios"]}
     for left_row in left["ratios"]:
@@ -857,6 +1311,8 @@ def make_compare(cik_a: str, cik_b: str, period: str) -> dict[str, Any]:
     return {
         "left": left["company"],
         "right": right["company"],
+        "leftMarket": left["market"],
+        "rightMarket": right["market"],
         "periodType": period,
         "leftLatestPeriod": left["periods"][-1],
         "rightLatestPeriod": right["periods"][-1],
@@ -869,6 +1325,93 @@ def latest_non_null(values: list[float | None]) -> float | None:
         if value is not None:
             return value
     return None
+
+
+def compact_analysis_context(analysis: dict[str, Any]) -> dict[str, Any]:
+    latest_index = len(analysis["periods"]) - 1
+    latest_period = analysis["periods"][latest_index]
+
+    def latest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        compact = []
+        for row in rows:
+            values = row.get("values", [])
+            value = values[latest_index] if latest_index < len(values) else None
+            if value is not None:
+                compact.append({"metric": row["label"], "value": value})
+        return compact
+
+    return {
+        "company": analysis["company"],
+        "market": analysis["market"],
+        "periodType": analysis["periodType"],
+        "latestPeriod": latest_period,
+        "periods": analysis["periods"],
+        "income": latest_rows(analysis["statements"]["income"]),
+        "balance": latest_rows(analysis["statements"]["balance"]),
+        "cashflow": latest_rows(analysis["statements"]["cashflow"]),
+        "ratios": [
+            {
+                "metric": row["label"],
+                "group": row.get("group", ""),
+                "formula": row.get("formula", ""),
+                "value": row["values"][latest_index] if latest_index < len(row["values"]) else None,
+                "unit": row.get("unit", ""),
+                "note": row.get("note", ""),
+            }
+            for row in analysis["ratios"]
+        ],
+        "source": analysis["source"],
+    }
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"]
+    parts = []
+    for item in payload.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            text = content.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            elif isinstance(text, dict) and isinstance(text.get("value"), str):
+                parts.append(text["value"])
+    return "\n".join(parts).strip()
+
+
+def ask_ai_assistant(question: str, api_key: str, analysis: dict[str, Any], model: str = DEFAULT_AI_MODEL) -> dict[str, Any]:
+    if not api_key.strip():
+        raise ValueError("请先输入 API Key")
+    if not question.strip():
+        raise ValueError("请输入需要分析的问题")
+
+    context = compact_analysis_context(analysis)
+    system_prompt = (
+        "你是一个严谨的财务报表分析助手。只能基于用户提供的财报数据和指标回答，"
+        "不要编造未给出的数字、行业结论或投资建议。回答时区分“数据说明了什么”和"
+        "“不能说明什么”，指出关键口径限制。中文输出，结构清晰，适合本地财报分析 demo 页面展示。"
+    )
+    user_prompt = (
+        f"用户问题：{question}\n\n"
+        f"财报数据上下文(JSON)：\n{json.dumps(context, ensure_ascii=False)}"
+    )
+    payload = {
+        "model": model or DEFAULT_AI_MODEL,
+        "input": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+        "max_output_tokens": 900,
+    }
+    raw = post_json(
+        OPENAI_RESPONSES_URL,
+        payload,
+        headers={"Authorization": f"Bearer {api_key.strip()}"},
+    )
+    answer = extract_response_text(raw)
+    if not answer:
+        raise RuntimeError("AI 服务返回为空，请检查模型名称或 API Key 权限")
+    return {"answer": answer, "model": payload["model"]}
 
 
 class DemoHandler(SimpleHTTPRequestHandler):
@@ -885,26 +1428,52 @@ class DemoHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/search":
                 params = urllib.parse.parse_qs(parsed.query)
                 query = params.get("q", [""])[0]
-                self.send_json({"results": search_companies(query)})
+                market = params.get("market", ["us"])[0]
+                self.send_json({"results": search_market_companies(query, market)})
                 return
             if parsed.path == "/api/analysis":
                 params = urllib.parse.parse_qs(parsed.query)
-                cik = params.get("cik", [""])[0]
+                market = params.get("market", ["us"])[0]
+                identifier = params.get("id", params.get("cik", [""]))[0]
                 period = params.get("period", ["annual"])[0]
                 if period not in {"annual", "quarterly"}:
                     period = "annual"
-                self.send_json(make_analysis(cik, period))
+                self.send_json(make_analysis(identifier, period, market))
                 return
             if parsed.path == "/api/compare":
                 params = urllib.parse.parse_qs(parsed.query)
-                cik_a = params.get("a", [""])[0]
-                cik_b = params.get("b", [""])[0]
+                id_a = params.get("a", [""])[0]
+                id_b = params.get("b", [""])[0]
+                market_a = params.get("marketA", params.get("market", ["us"]))[0]
+                market_b = params.get("marketB", params.get("market", ["us"]))[0]
                 period = params.get("period", ["annual"])[0]
                 if period not in {"annual", "quarterly"}:
                     period = "annual"
-                self.send_json(make_compare(cik_a, cik_b, period))
+                self.send_json(make_compare(id_a, id_b, period, market_a, market_b))
                 return
             return super().do_GET()
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=500)
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+            payload = json.loads(raw or "{}")
+            if parsed.path == "/api/assistant":
+                analysis = payload.get("analysis")
+                if not isinstance(analysis, dict):
+                    raise ValueError("请先加载一家公司的财报分析结果")
+                answer = ask_ai_assistant(
+                    str(payload.get("question") or ""),
+                    str(payload.get("apiKey") or ""),
+                    analysis,
+                    str(payload.get("model") or DEFAULT_AI_MODEL),
+                )
+                self.send_json(answer)
+                return
+            self.send_json({"error": "未知接口"}, status=404)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
 

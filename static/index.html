@@ -3,95 +3,154 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>财报分析 Demo</title>
+    <title>财报分析工作台</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <main class="app">
-      <section class="workspace">
-        <header class="topbar">
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">财</div>
           <div>
-            <h1>财报分析 Demo</h1>
-            <p>输入美股上市公司名称或股票代码，读取 SEC EDGAR 真实财报数据。</p>
+            <h1>财报分析工作台</h1>
+            <p>本地运行，支持美股 SEC 与 A 股财报数据</p>
           </div>
-          <div class="source-pill">SEC XBRL</div>
-        </header>
+        </div>
 
-        <section class="controls">
-          <div class="search-block">
-            <label for="companySearch">主公司</label>
-            <div class="search-row">
-              <input id="companySearch" autocomplete="off" placeholder="例如 Apple、Microsoft、AAPL" />
-              <button id="loadBtn">分析</button>
-            </div>
-            <div id="searchResults" class="results"></div>
-          </div>
-          <div class="period-block">
-            <label>周期</label>
-            <div class="segmented">
-              <button class="active" data-period="annual">年度</button>
-              <button data-period="quarterly">季度</button>
-            </div>
-          </div>
-          <div class="search-block compare-input">
-            <label for="peerSearch">可比公司</label>
-            <div class="search-row">
-              <input id="peerSearch" autocomplete="off" placeholder="输入同行公司" />
-              <button id="compareBtn">对比</button>
-            </div>
-            <div id="peerResults" class="results"></div>
+        <section class="side-section">
+          <div class="section-label">市场</div>
+          <div class="market-switch" id="marketSwitch">
+            <button class="active" data-market="us">美股</button>
+            <button data-market="a">A 股</button>
           </div>
         </section>
+
+        <section class="side-section search-block">
+          <label for="companySearch">主公司</label>
+          <div class="search-row">
+            <input id="companySearch" autocomplete="off" placeholder="Apple、AAPL、贵州茅台、600519" />
+            <button id="loadBtn">分析</button>
+          </div>
+          <div id="searchResults" class="results"></div>
+        </section>
+
+        <section class="side-section">
+          <div class="section-label">周期</div>
+          <div class="segmented">
+            <button class="active" data-period="annual">年度</button>
+            <button data-period="quarterly">季度</button>
+          </div>
+        </section>
+
+        <section class="side-section search-block">
+          <label for="peerSearch">可比公司</label>
+          <div class="search-row">
+            <input id="peerSearch" autocomplete="off" placeholder="同市场或跨市场对比" />
+            <button id="compareBtn">对比</button>
+          </div>
+          <div id="peerResults" class="results"></div>
+        </section>
+
+        <section class="side-section source-box">
+          <div class="section-label">数据口径</div>
+          <p id="sourceNote">请选择公司后查看数据源说明。</p>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="hero">
+          <div>
+            <div class="eyebrow">Financial Statement Console</div>
+            <h2>财务报表分析工具</h2>
+            <p>整合三大表、专业指标、趋势图和 AI 问答，支持美股 SEC 与 A 股公开财报数据。</p>
+          </div>
+        </header>
 
         <section id="status" class="status">请选择一家公司开始分析。</section>
         <section id="summary" class="summary-grid"></section>
 
-        <section class="panel">
-          <div class="panel-head">
-            <h2>三大表</h2>
-            <div class="tabs">
-              <button class="active" data-tab="income">利润表</button>
-              <button data-tab="balance">资产负债表</button>
-              <button data-tab="cashflow">现金流量表</button>
-            </div>
+        <section class="content-grid">
+          <div class="main-column">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h3>三大表</h3>
+                  <p>利润表、资产负债表、现金流量表的最近期间数据</p>
+                </div>
+                <div class="tabs">
+                  <button class="active" data-tab="income">利润表</button>
+                  <button data-tab="balance">资产负债表</button>
+                  <button data-tab="cashflow">现金流量表</button>
+                </div>
+              </div>
+              <div id="statementTable" class="table-wrap empty">等待加载财报数据</div>
+            </section>
+
+            <section class="panel metrics-panel">
+              <div class="panel-head">
+                <div>
+                  <h3>专业指标</h3>
+                  <p>根据课程指标清单计算，缺失项以空值展示</p>
+                </div>
+                <select id="metricFilter">
+                  <option value="all">全部指标</option>
+                </select>
+              </div>
+              <div id="ratioTable" class="table-wrap empty">等待加载指标</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h3>同行专业指标对比</h3>
+                  <p id="compareMeta">输入可比公司后查看最新期间指标差异</p>
+                </div>
+              </div>
+              <div id="compareTable" class="table-wrap empty">输入可比公司后查看专业指标对比</div>
+            </section>
           </div>
-          <div id="statementTable" class="table-wrap empty">等待加载财报数据</div>
-        </section>
 
-        <section class="panel metrics-panel">
-          <div class="panel-head">
-            <h2>专业指标</h2>
-            <select id="metricFilter">
-              <option value="all">全部指标</option>
-            </select>
-          </div>
-          <div id="ratioTable" class="table-wrap empty">等待加载指标</div>
-        </section>
+          <aside class="insight-column">
+            <section class="panel assistant-panel">
+              <div class="panel-head compact">
+                <div>
+                  <h3>AI 指标分析助手</h3>
+                  <p>输入 API Key 后，可基于当前财报数据提问</p>
+                </div>
+              </div>
+              <div class="assistant-body">
+                <label for="apiKeyInput">API Key</label>
+                <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-..." />
+                <label for="modelInput">模型</label>
+                <input id="modelInput" autocomplete="off" value="gpt-4.1-mini" />
+                <label for="assistantQuestion">问题</label>
+                <textarea id="assistantQuestion" rows="5" placeholder="例如：这家公司最新一期 ROE 变化应该从哪几个指标解释？"></textarea>
+                <button id="askAssistantBtn">询问助手</button>
+                <div id="assistantAnswer" class="assistant-answer">加载公司后，可以让助手解释指标含义、趋势和口径限制。</div>
+              </div>
+            </section>
 
-        <section class="analysis-grid">
-          <section class="panel">
-            <div class="panel-head">
-              <h2>杜邦分析</h2>
-              <span class="panel-note">ROE = 销售净利率 × 总资产周转率 × 权益倍数</span>
-            </div>
-            <div id="dupontPanel" class="dupont-wrap empty">等待加载杜邦拆解</div>
-          </section>
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <h3>杜邦分析</h3>
+                  <p>ROE = 销售净利率 × 总资产周转率 × 权益倍数</p>
+                </div>
+              </div>
+              <div id="dupontPanel" class="dupont-wrap empty">等待加载杜邦拆解</div>
+            </section>
 
-          <section class="panel">
-            <div class="panel-head">
-              <h2>时间趋势</h2>
-              <select id="trendSelect"></select>
-            </div>
-            <canvas id="trendCanvas" width="900" height="420"></canvas>
-          </section>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>同行专业指标对比</h2>
-            <span id="compareMeta" class="panel-note"></span>
-          </div>
-          <div id="compareTable" class="table-wrap empty">输入可比公司后查看专业指标对比</div>
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <h3>时间趋势</h3>
+                  <p>关键财务项目最近期间变化</p>
+                </div>
+                <select id="trendSelect"></select>
+              </div>
+              <canvas id="trendCanvas" width="680" height="360"></canvas>
+            </section>
+          </aside>
         </section>
       </section>
     </main>

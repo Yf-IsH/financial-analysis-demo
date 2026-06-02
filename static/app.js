@@ -1,4 +1,5 @@
 const state = {
+  market: "us",
   selected: null,
   peer: null,
   period: "annual",
@@ -18,6 +19,19 @@ const peerResults = $("peerResults");
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle("error", isError);
+}
+
+function companyId(company) {
+  return company.id || company.cik || company.symbol || company.code || company.ticker;
+}
+
+function companyLabel(company) {
+  if (!company) return "";
+  return `${company.displayTicker || company.ticker || company.symbol} - ${company.title}`;
+}
+
+function sourceName(market) {
+  return market === "a" ? "A 股 东方财富" : "美股 SEC";
 }
 
 function formatNumber(value, unit = "") {
@@ -41,8 +55,8 @@ function debounce(fn, delay = 260) {
   };
 }
 
-async function api(path) {
-  const response = await fetch(path);
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
   const payload = await response.json();
   if (!response.ok || payload.error) throw new Error(payload.error || "请求失败");
   return payload;
@@ -53,19 +67,32 @@ async function doSearch(query, targetEl, onPick) {
     targetEl.style.display = "none";
     return;
   }
-  const payload = await api(`/api/search?q=${encodeURIComponent(query)}`);
-  targetEl.innerHTML = "";
-  payload.results.forEach((company) => {
-    const button = document.createElement("button");
-    button.className = "result-item";
-    button.innerHTML = `<span><strong>${company.ticker}</strong> ${company.title}</span><span class="muted">CIK ${company.cik}</span>`;
-    button.addEventListener("click", () => {
-      onPick(company);
-      targetEl.style.display = "none";
+  try {
+    const payload = await api(`/api/search?market=${encodeURIComponent(state.market)}&q=${encodeURIComponent(query)}`);
+    targetEl.innerHTML = "";
+    payload.results.forEach((company) => {
+      const button = document.createElement("button");
+      button.className = "result-item";
+      const left = document.createElement("span");
+      const strong = document.createElement("strong");
+      strong.textContent = company.displayTicker || company.ticker || company.symbol || company.code;
+      left.appendChild(strong);
+      left.append(` ${company.title}`);
+      const right = document.createElement("span");
+      right.className = "muted";
+      right.textContent = company.market === "a" ? company.symbol : `CIK ${company.cik}`;
+      button.append(left, right);
+      button.addEventListener("click", () => {
+        onPick(company);
+        targetEl.style.display = "none";
+      });
+      targetEl.appendChild(button);
     });
-    targetEl.appendChild(button);
-  });
-  targetEl.style.display = payload.results.length ? "block" : "none";
+    targetEl.style.display = payload.results.length ? "block" : "none";
+  } catch (error) {
+    const extra = state.selected.market === "a" ? "A 股公开财报接口需要能访问东方财富数据中心；如果刚更新过代码，请先重启本地服务。" : "";
+    setStatus(`${error.message}${extra ? ` ${extra}` : ""}`, true);
+  }
 }
 
 function renderTable(container, rows, periods, unitByRow = () => "") {
@@ -102,6 +129,9 @@ function metricInfo(row) {
   </details>`;
 }
 
+function updateHero() {
+}
+
 function renderSummary() {
   const summary = $("summary");
   const data = state.analysis;
@@ -114,15 +144,23 @@ function renderSummary() {
     const row = data.statements[statement].find((item) => item.metric === metric);
     return row ? row.values[row.values.length - 1] : null;
   };
-  const netMargin = data.ratios.find((row) => row.metric === "net_margin");
+  const getRatio = (metric) => data.ratios.find((row) => row.metric === metric)?.values.at(-1);
   const cards = [
-    ["最新期间", period],
-    ["营业收入", formatNumber(getRowValue("income", "revenue"))],
-    ["净利润", formatNumber(getRowValue("income", "net_income"))],
-    ["销售净利率", formatNumber(netMargin?.values.at(-1), "%")],
+    ["最新期间", period, data.periodType === "annual" ? "年度数据" : "季度数据"],
+    ["营业收入", formatNumber(getRowValue("income", "revenue")), "收入规模"],
+    ["净利润", formatNumber(getRowValue("income", "net_income")), "盈利结果"],
+    ["销售净利率", formatNumber(getRatio("net_margin"), "%"), "利润率"],
+    ["ROE", formatNumber(getRatio("roe"), "%"), "股东回报"],
+    ["资产负债率", formatNumber(getRatio("debt_ratio"), "%"), "资本结构"],
   ];
   summary.innerHTML = cards
-    .map(([label, value]) => `<div class="metric-card"><span>${label}</span><strong>${value}</strong></div>`)
+    .map(
+      ([label, value, hint]) => `<div class="metric-card">
+        <span>${label}</span>
+        <strong>${value}</strong>
+        <small>${hint}</small>
+      </div>`,
+    )
     .join("");
 }
 
@@ -173,11 +211,7 @@ function renderDupont() {
   const dupont = state.analysis.dupont;
   const lastIndex = dupont.periods.length - 1;
   const get = (metric) => dupont.rows.find((row) => row.metric === metric);
-  const components = [
-    get("net_margin"),
-    get("asset_turnover"),
-    get("equity_multiplier"),
-  ];
+  const components = [get("net_margin"), get("asset_turnover"), get("equity_multiplier")];
   const dupontRoe = get("dupont_roe");
   const actualRoe = get("roe");
   container.className = "dupont-wrap";
@@ -194,12 +228,12 @@ function renderDupont() {
         .join("")}
       <div class="dupont-op">=</div>
       <div class="dupont-box result">
-        <span>杜邦拆解 ROE</span>
+        <span>拆解 ROE</span>
         <strong>${formatNumber(dupontRoe.values[lastIndex], dupontRoe.unit)}</strong>
       </div>
     </div>
     <div class="dupont-foot">
-      <span>最新期间：${dupont.periods[lastIndex]}</span>
+      <span>${dupont.periods[lastIndex]}</span>
       <span>实际 ROE：${formatNumber(actualRoe.values[lastIndex], actualRoe.unit)}</span>
     </div>
   `;
@@ -226,12 +260,13 @@ function drawTrend() {
   canvas.height = Math.floor(height * ratio);
   ctx.scale(ratio, ratio);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = "#fbfaf7";
   ctx.fillRect(0, 0, width, height);
 
   if (!state.analysis) {
-    ctx.fillStyle = "#66747d";
-    ctx.fillText("等待加载趋势数据", 24, 40);
+    ctx.fillStyle = "#6f766f";
+    ctx.font = "14px Segoe UI, Microsoft YaHei, sans-serif";
+    ctx.fillText("等待加载趋势数据", 22, 38);
     return;
   }
 
@@ -239,11 +274,11 @@ function drawTrend() {
   const trend = state.analysis.trends[key];
   const values = trend.values;
   const valid = values.filter((value) => value !== null && value !== undefined);
-  const pad = { left: 78, right: 24, top: 28, bottom: 54 };
+  const pad = { left: 76, right: 24, top: 28, bottom: 54 };
   const chartW = width - pad.left - pad.right;
   const chartH = height - pad.top - pad.bottom;
 
-  ctx.strokeStyle = "#d9e0e3";
+  ctx.strokeStyle = "#ded8cc";
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let i = 0; i <= 4; i += 1) {
@@ -254,7 +289,7 @@ function drawTrend() {
   ctx.stroke();
 
   if (!valid.length) {
-    ctx.fillStyle = "#66747d";
+    ctx.fillStyle = "#6f766f";
     ctx.fillText("该项目没有可用趋势数据", pad.left, pad.top + 22);
     return;
   }
@@ -268,14 +303,14 @@ function drawTrend() {
   const yFor = (value) => pad.top + chartH - ((value - min) / (max - min)) * chartH;
   const xFor = (index) => pad.left + (chartW / Math.max(values.length - 1, 1)) * index;
 
-  ctx.fillStyle = "#66747d";
+  ctx.fillStyle = "#6f766f";
   ctx.font = "12px Segoe UI, Microsoft YaHei, sans-serif";
   for (let i = 0; i <= 4; i += 1) {
     const value = max - ((max - min) / 4) * i;
     ctx.fillText(formatNumber(value), 8, pad.top + (chartH / 4) * i + 4);
   }
 
-  ctx.strokeStyle = "#0b6b78";
+  ctx.strokeStyle = "#1f7a6b";
   ctx.lineWidth = 3;
   ctx.beginPath();
   values.forEach((value, index) => {
@@ -289,18 +324,30 @@ function drawTrend() {
 
   values.forEach((value, index) => {
     const x = xFor(index);
-    ctx.fillStyle = "#66747d";
+    ctx.fillStyle = "#6f766f";
     ctx.save();
     ctx.translate(x, height - 18);
     ctx.rotate(-Math.PI / 5);
     ctx.fillText(state.analysis.periods[index], -18, 0);
     ctx.restore();
     if (value === null || value === undefined) return;
-    ctx.fillStyle = "#0b6b78";
+    ctx.fillStyle = "#1f7a6b";
     ctx.beginPath();
     ctx.arc(x, yFor(value), 4, 0, Math.PI * 2);
     ctx.fill();
   });
+}
+
+function renderAll() {
+  renderSummary();
+  renderStatement();
+  renderMetricFilters();
+  renderRatios();
+  renderDupont();
+  renderTrendOptions();
+  drawTrend();
+  $("sourceNote").textContent = state.analysis?.source?.note || "请选择公司后查看数据源说明。";
+  updateHero();
 }
 
 async function loadAnalysis() {
@@ -308,17 +355,14 @@ async function loadAnalysis() {
     setStatus("请先选择主公司。", true);
     return;
   }
-  setStatus(`正在读取 ${state.selected.ticker} 的真实 SEC 财报数据...`);
+  const id = companyId(state.selected);
+  setStatus(`正在读取 ${companyLabel(state.selected)} 的${sourceName(state.selected.market)}财报数据...`);
   try {
-    state.analysis = await api(`/api/analysis?cik=${state.selected.cik}&period=${state.period}`);
-    setStatus(`${state.analysis.company.ticker} ${state.analysis.company.title}：已加载 ${state.analysis.periods.length} 个期间。`);
-    renderSummary();
-    renderStatement();
-    renderMetricFilters();
-    renderRatios();
-    renderDupont();
-    renderTrendOptions();
-    drawTrend();
+    state.analysis = await api(
+      `/api/analysis?market=${encodeURIComponent(state.selected.market)}&id=${encodeURIComponent(id)}&period=${state.period}`,
+    );
+    setStatus(`${companyLabel(state.analysis.company)}：已加载 ${state.analysis.periods.length} 个期间。`);
+    renderAll();
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -329,10 +373,12 @@ async function loadCompare() {
     setStatus("请先选择主公司和可比公司。", true);
     return;
   }
-  setStatus(`正在对比 ${state.selected.ticker} 与 ${state.peer.ticker} 的专业指标...`);
+  setStatus(`正在对比 ${companyLabel(state.selected)} 与 ${companyLabel(state.peer)} 的专业指标...`);
   try {
-    const payload = await api(`/api/compare?a=${state.selected.cik}&b=${state.peer.cik}&period=${state.period}`);
-    $("compareMeta").textContent = `${payload.left.ticker} ${payload.leftLatestPeriod} vs ${payload.right.ticker} ${payload.rightLatestPeriod}`;
+    const payload = await api(
+      `/api/compare?a=${encodeURIComponent(companyId(state.selected))}&b=${encodeURIComponent(companyId(state.peer))}&marketA=${encodeURIComponent(state.selected.market)}&marketB=${encodeURIComponent(state.peer.market)}&period=${state.period}`,
+    );
+    $("compareMeta").textContent = `${payload.left.displayTicker || payload.left.ticker} ${payload.leftLatestPeriod} vs ${payload.right.displayTicker || payload.right.ticker} ${payload.rightLatestPeriod}`;
     const rows = payload.rows
       .map((row) => {
         const unit = row.unit || "";
@@ -346,10 +392,36 @@ async function loadCompare() {
       })
       .join("");
     $("compareTable").className = "table-wrap";
-    $("compareTable").innerHTML = `<table class="metrics-table"><thead><tr><th>指标</th><th>分组</th><th>${payload.left.ticker}</th><th>${payload.right.ticker}</th><th>差值</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $("compareTable").innerHTML = `<table class="metrics-table"><thead><tr><th>指标</th><th>分组</th><th>${payload.left.displayTicker || payload.left.ticker}</th><th>${payload.right.displayTicker || payload.right.ticker}</th><th>差值</th></tr></thead><tbody>${rows}</tbody></table>`;
     setStatus("可比公司专业指标对比已完成。");
   } catch (error) {
     setStatus(error.message, true);
+  }
+}
+
+async function askAssistant() {
+  const answerEl = $("assistantAnswer");
+  if (!state.analysis) {
+    answerEl.textContent = "请先加载公司财报数据。";
+    return;
+  }
+  const apiKey = $("apiKeyInput").value.trim();
+  const question = $("assistantQuestion").value.trim();
+  const model = $("modelInput").value.trim();
+  if (!apiKey || !question) {
+    answerEl.textContent = "请填写 API Key 和问题。";
+    return;
+  }
+  answerEl.textContent = "正在基于当前指标生成分析...";
+  try {
+    const payload = await api("/api/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey, question, model, analysis: state.analysis }),
+    });
+    answerEl.textContent = payload.answer;
+  } catch (error) {
+    answerEl.textContent = error.message;
   }
 }
 
@@ -357,7 +429,8 @@ searchInput.addEventListener(
   "input",
   debounce(() => doSearch(searchInput.value, searchResults, (company) => {
     state.selected = company;
-    searchInput.value = `${company.ticker} - ${company.title}`;
+    searchInput.value = companyLabel(company);
+    updateHero();
   })),
 );
 
@@ -365,12 +438,13 @@ peerInput.addEventListener(
   "input",
   debounce(() => doSearch(peerInput.value, peerResults, (company) => {
     state.peer = company;
-    peerInput.value = `${company.ticker} - ${company.title}`;
+    peerInput.value = companyLabel(company);
   })),
 );
 
 $("loadBtn").addEventListener("click", loadAnalysis);
 $("compareBtn").addEventListener("click", loadCompare);
+$("askAssistantBtn").addEventListener("click", askAssistant);
 $("trendSelect").addEventListener("change", drawTrend);
 $("metricFilter").addEventListener("change", () => {
   state.metricFilter = $("metricFilter").value;
@@ -396,4 +470,25 @@ document.querySelectorAll(".tabs button").forEach((button) => {
   });
 });
 
+document.querySelectorAll("#marketSwitch button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("#marketSwitch button").forEach((item) => item.classList.remove("active"));
+    button.classList.add("active");
+    state.market = button.dataset.market;
+    state.selected = null;
+    state.peer = null;
+    state.analysis = null;
+    searchInput.value = "";
+    peerInput.value = "";
+    $("compareTable").className = "table-wrap empty";
+    $("compareTable").textContent = "输入可比公司后查看专业指标对比";
+    $("sourceNote").textContent = "请选择公司后查看数据源说明。";
+    setStatus(`已切换到${sourceName(state.market)}。`);
+    renderSummary();
+    updateHero();
+    drawTrend();
+  });
+});
+
+updateHero();
 drawTrend();
